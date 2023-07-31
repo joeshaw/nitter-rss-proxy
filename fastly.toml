@@ -1,0 +1,12 @@
+# This file describes a Fastly Compute@Edge package. To learn more visit:
+# https://developer.fastly.com/reference/fastly-toml/
+
+authors = ["joe@joeshaw.org"]
+description = ""
+language = "go"
+manifest_version = 3
+name = "nitter-rss-proxy"
+service_id = "0W6RnZLuJcWOj0qcF2VNo2"
+
+[scripts]
+  build = "env GOARCH=wasm GOOS=wasip1 go1.21rc3 build -o bin/main.wasm ."

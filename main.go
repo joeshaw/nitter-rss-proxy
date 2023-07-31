@@ -4,24 +4,21 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
-	"net/http"
-	"net/http/fcgi"
 	"net/url"
-	"os"
 	"path"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/fastly/compute-sdk-go/fsthttp"
 	"github.com/gorilla/feeds"
 	"github.com/mmcdole/gofeed"
 )
@@ -40,48 +37,72 @@ const (
 	rssFormat  feedFormat = "rss"
 )
 
+// Pulled from https://github.com/zedeus/nitter/wiki/Instances on 31
+// July 2023.  TODO: Pull this automatically, like twiiit does.
+var instances = []string{
+	"https://nitter.lacontrevoie.fr",
+	"https://nitter.nixnet.services",
+	"https://nitter.fdn.fr",
+	"https://nitter.1d4.us",
+	"https://nitter.kavin.rocks",
+	"https://nitter.unixfox.eu",
+	"https://nitter.moomoo.me",
+	"https://nitter.weiler.rocks",
+	"https://nitter.sethforprivacy.com",
+	"https://nitter.nl",
+	"https://nitter.mint.lgbt",
+	"https://nitter.esmailelbob.xyz",
+	"https://tw.artemislena.eu",
+	"https://nitter.tiekoetter.com",
+	"https://nitter.privacy.com.de",
+	"https://nitter.cz",
+	"https://nitter.privacydev.net",
+	"https://unofficialbird.com",
+	"https://nitter.projectsegfau.lt",
+	"https://nitter.eu.projectsegfau.lt",
+	"https://nitter.in.projectsegfau.lt",
+	"https://singapore.unofficialbird.com",
+	"https://canada.unofficialbird.com",
+	"https://india.unofficialbird.com",
+	"https://nederland.unofficialbird.com",
+	"https://uk.unofficialbird.com",
+	"https://nitter.d420.de",
+	"https://nitter.caioalonso.com",
+	"https://nitter.at",
+	"https://nitter.nicfab.eu",
+	"https://bird.habedieeh.re",
+	"https://nitter.hostux.net",
+	"https://nitter.us.projectsegfau.lt",
+	"https://nitter.kling.gg",
+	"https://nitter.tux.pizza",
+	"https://nitter.onthescent.xyz",
+	"https://nitter.private.coffee",
+	"https://nitter.oksocial.net",
+	"https://nitter.services.woodland.cafe",
+	"https://nitter.dafriser.be",
+	"https://nitter.catsarch.com",
+}
+
 func main() {
 	var opts handlerOptions
 
-	addr := flag.String("addr", "localhost:8080", "Network address to listen on")
-	base := flag.String("base", "", "Base URL for served feeds")
-	flag.BoolVar(&opts.cycle, "cycle", true, "Cycle through instances")
-	flag.BoolVar(&opts.debugAuthors, "debug-authors", true, "Log per-author tweet counts")
-	fastCGI := flag.Bool("fastcgi", false, "Use FastCGI instead of listening on -addr")
-	format := flag.String("format", "atom", `Feed format to write ("atom", "json", "rss")`)
-	instances := flag.String("instances", "https://nitter.net", "Comma-separated list of URLs of Nitter instances to use")
-	flag.BoolVar(&opts.rewrite, "rewrite", true, "Rewrite tweet content to point at twitter.com")
-	timeout := flag.Int("timeout", 10, "HTTP timeout in seconds for fetching a feed from a Nitter instance")
-	user := flag.String("user", "", "User to fetch to stdout (instead of starting a server)")
-	flag.Parse()
+	opts.cycle = true
+	opts.debugAuthors = true
+	opts.format = feedFormat(atomFormat)
+	opts.rewrite = true
+	opts.timeout = 10 * time.Second
 
-	opts.format = feedFormat(*format)
-	opts.timeout = time.Duration(*timeout) * time.Second
-
-	hnd, err := newHandler(*base, *instances, opts)
+	hnd, err := newHandler("", strings.Join(instances, ","), opts)
 	if err != nil {
 		log.Fatal("Failed creating handler: ", err)
 	}
 
-	if *user != "" {
-		w := newFakeResponseWriter()
-		req, _ := http.NewRequest(http.MethodGet, "/"+*user, nil)
-		hnd.ServeHTTP(w, req)
-		if w.status != http.StatusOK {
-			log.Fatal(w.msg)
-		}
-	} else if *fastCGI {
-		log.Fatal("Failed serving over FastCGI: ", fcgi.Serve(nil, hnd))
-	} else {
-		srv := &http.Server{Addr: *addr, Handler: hnd}
-		log.Fatalf("Failed serving on %v: %v", *addr, srv.ListenAndServe())
-	}
+	fsthttp.Serve(hnd)
 }
 
-// handler implements http.Handler to accept GET requests for RSS feeds.
+// handler implements fsthttp.Handler to accept GET requests for RSS feeds.
 type handler struct {
 	base      *url.URL
-	client    http.Client
 	instances []*url.URL
 	opts      handlerOptions
 	start     int        // starting index in instances
@@ -98,8 +119,7 @@ type handlerOptions struct {
 
 func newHandler(base, instances string, opts handlerOptions) (*handler, error) {
 	hnd := &handler{
-		client: http.Client{Timeout: opts.timeout},
-		opts:   opts,
+		opts: opts,
 	}
 
 	if base != "" {
@@ -137,21 +157,21 @@ var (
 	queryRegexp = regexp.MustCompile(`^max_position=[^&]+$`)
 )
 
-func (hnd *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodGet {
-		http.Error(w, "Only GET supported", http.StatusMethodNotAllowed)
+func (hnd *handler) ServeHTTP(ctx context.Context, w fsthttp.ResponseWriter, req *fsthttp.Request) {
+	if req.Method != fsthttp.MethodGet {
+		fsthttp.Error(w, "Only GET supported", fsthttp.StatusMethodNotAllowed)
 		return
 	}
 
 	// Sigh.
 	if strings.HasSuffix(req.URL.Path, "favicon.ico") {
-		http.Error(w, "File not found", http.StatusNotFound)
+		fsthttp.Error(w, "File not found", fsthttp.StatusNotFound)
 		return
 	}
 
 	user := userRegexp.FindString(req.URL.Path)
 	if user == "" {
-		http.Error(w, "Invalid user", http.StatusBadRequest)
+		fsthttp.Error(w, "Invalid user", fsthttp.StatusBadRequest)
 		return
 	}
 	var query string
@@ -180,7 +200,7 @@ func (hnd *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 		return
 	}
-	http.Error(w, "Couldn't get feed from any instances", http.StatusInternalServerError)
+	fsthttp.Error(w, "Couldn't get feed from any instances", fsthttp.StatusInternalServerError)
 }
 
 // fetch fetches user's feed from supplied Nitter instance.
@@ -189,27 +209,52 @@ func (hnd *handler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // If query is non-empty, it will be passed to the instance.
 // The response body, final location (after redirects), and Min-Id header value are returned.
 func (hnd *handler) fetch(instance *url.URL, user, query string) (
-	body []byte, loc *url.URL, minID string, err error) {
+	body []byte, loc *url.URL, minID string, err error,
+) {
 	u := *instance
 	u.Path = path.Join(u.Path, user, "rss")
 	u.RawQuery = query
 
 	log.Print("Fetching ", u.String())
-	resp, err := hnd.client.Get(u.String())
+
+	bopts := &fsthttp.BackendOptions{}
+	bopts = bopts.ConnectTimeout(hnd.opts.timeout)
+	bopts = bopts.FirstByteTimeout(hnd.opts.timeout)
+	bopts = bopts.BetweenBytesTimeout(hnd.opts.timeout)
+	bopts = bopts.UseSSL(true)
+
+	// needed to work around a viceroy bug
+	bopts = bopts.HostOverride(instance.Host)
+
+	b, err := fsthttp.RegisterDynamicBackend(
+		instance.Host,
+		instance.Host,
+		bopts,
+	)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	req, err := fsthttp.NewRequest("GET", u.String(), nil)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	resp, err := req.Send(context.Background(), b.Name())
 	if err != nil {
 		return nil, nil, "", err
 	}
 	defer resp.Body.Close()
 	loc = resp.Request.URL
-	if resp.StatusCode != http.StatusOK {
-		return nil, loc, "", fmt.Errorf("server returned %v (%v)", resp.StatusCode, resp.Status)
+	if resp.StatusCode != fsthttp.StatusOK {
+		return nil, loc, "", fmt.Errorf("server returned %v", resp.StatusCode)
 	}
-	body, err = ioutil.ReadAll(resp.Body)
+	body, err = io.ReadAll(resp.Body)
 	return body, loc, resp.Header.Get(minIDHeader), err
 }
 
 // rewrite parses user's feed from b and rewrites it to w.
-func (hnd *handler) rewrite(w http.ResponseWriter, b []byte, user string, loc *url.URL) error {
+func (hnd *handler) rewrite(w fsthttp.ResponseWriter, b []byte, user string, loc *url.URL) error {
 	of, err := gofeed.NewParser().ParseString(string(b))
 	if err != nil {
 		return err
@@ -538,27 +583,3 @@ func rewriteTwitterURL(orig string) string {
 	u.Fragment = "" // get rid of weird '#m' fragments added by Nitter
 	return u.String()
 }
-
-// fakeResponseWriter is an http.ResponseWriter implementation that just writes to stdout.
-// It's used for the -user flag.
-type fakeResponseWriter struct {
-	status int
-	msg    string // error from body if Write is called with non-200 status
-}
-
-func newFakeResponseWriter() *fakeResponseWriter {
-	// Default to success in case WriteHeader isn't called.
-	return &fakeResponseWriter{status: http.StatusOK}
-}
-
-func (w *fakeResponseWriter) Header() http.Header { return map[string][]string{} }
-
-func (w *fakeResponseWriter) Write(b []byte) (int, error) {
-	if w.status != http.StatusOK {
-		w.msg = string(b)
-		return len(b), nil
-	}
-	return os.Stdout.Write(b)
-}
-
-func (w *fakeResponseWriter) WriteHeader(statusCode int) { w.status = statusCode }
