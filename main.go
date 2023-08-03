@@ -373,11 +373,12 @@ func (hnd *handler) rewrite(w fsthttp.ResponseWriter, b []byte, user string, loc
 }
 
 const (
-	start  = `(?:^|\b)`
-	end    = `(?:$|\b)`
-	scheme = `https?://`
-	host   = `[a-zA-Z0-9][-a-zA-Z0-9]*\.[-.a-zA-Z0-9]+`
-	slash  = `(?:/|%2F)` // Nitter seems to incorrectly (?) escape slashes in some cases.
+	start         = `(?:^|\b)`
+	end           = `(?:$|\b)`
+	scheme        = `https?://`
+	host          = `[a-zA-Z0-9][-a-zA-Z0-9]*\.[-.a-zA-Z0-9]+`
+	slash         = `(?:/|%2F)` // Nitter seems to incorrectly (?) escape slashes in some cases.
+	invidiousHost = `invidious\.[-.a-zA-Z0-9]+`
 )
 
 // encPicRegexp matches weird Nitter RULs with base64-encoded image paths,
@@ -525,7 +526,7 @@ var rewritePatterns = []struct {
 		// "https://invidious.snopyta.org/AxWGuBDrA1u". The scheme is optional.
 		regexp.MustCompile(start +
 			`(` + scheme + `)?` + // group 1: optional scheme
-			`invidious\.snopyta\.org/` +
+			invidiousHost + `/` +
 			`([-_a-zA-Z0-9]{8,})` + // group 2: video ID
 			end),
 		func(ms []string) string {
