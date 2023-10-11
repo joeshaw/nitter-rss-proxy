@@ -9,4 +9,4 @@ name = "nitter-rss-proxy"
 service_id = "0W6RnZLuJcWOj0qcF2VNo2"
 
 [scripts]
-  build = "env GOARCH=wasm GOOS=wasip1 go1.21rc3 build -o bin/main.wasm ."
+  build = "env GOARCH=wasm GOOS=wasip1 go build -o bin/main.wasm ."

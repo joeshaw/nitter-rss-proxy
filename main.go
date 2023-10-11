@@ -11,11 +11,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/url"
 	"path"
 	"regexp"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fastly/compute-sdk-go/fsthttp"
@@ -105,8 +105,6 @@ type handler struct {
 	base      *url.URL
 	instances []*url.URL
 	opts      handlerOptions
-	start     int        // starting index in instances
-	mu        sync.Mutex // protects start
 }
 
 type handlerOptions struct {
@@ -179,12 +177,8 @@ func (hnd *handler) ServeHTTP(ctx context.Context, w fsthttp.ResponseWriter, req
 		query = req.URL.RawQuery
 	}
 
-	start := hnd.start
-	if hnd.opts.cycle {
-		hnd.mu.Lock()
-		hnd.start = (hnd.start + 1) % len(hnd.instances)
-		hnd.mu.Unlock()
-	}
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	start := r.Intn(len(hnd.instances))
 
 	for i := 0; i < len(hnd.instances); i++ {
 		in := hnd.instances[(start+i)%len(hnd.instances)]
