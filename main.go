@@ -216,6 +216,7 @@ func (hnd *handler) fetch(instance *url.URL, user, query string) (
 	bopts = bopts.FirstByteTimeout(hnd.opts.timeout)
 	bopts = bopts.BetweenBytesTimeout(hnd.opts.timeout)
 	bopts = bopts.UseSSL(true)
+	bopts = bopts.SNIHostname(instance.Host)
 
 	// needed to work around a viceroy bug
 	bopts = bopts.HostOverride(instance.Host)
