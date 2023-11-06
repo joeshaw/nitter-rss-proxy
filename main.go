@@ -13,6 +13,7 @@ import (
 	"log"
 	"math/rand"
 	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"strings"
@@ -37,9 +38,11 @@ const (
 	rssFormat  feedFormat = "rss"
 )
 
-// Pulled from https://github.com/zedeus/nitter/wiki/Instances on 31
-// July 2023.  TODO: Pull this automatically, like twiiit does.
-var instances = []string{
+// Fallback list of instances, pulled from
+// https://github.com/zedeus/nitter/wiki/Instances on 31 July 2023. This
+// list is only used if we can't automatically pull a list of working
+// instances.
+var fallbackInstances = []string{
 	"https://nitter.lacontrevoie.fr",
 	"https://nitter.nixnet.services",
 	"https://nitter.fdn.fr",
@@ -92,6 +95,20 @@ func main() {
 	opts.rewrite = true
 	opts.timeout = 10 * time.Second
 
+	log.Printf(
+		"Received request on %s for service version %s",
+		os.Getenv("FASTLY_HOSTNAME"),
+		os.Getenv("FASTLY_SERVICE_VERSION"),
+	)
+
+	instances := getCurrentInstances(opts)
+	if len(instances) == 0 {
+		log.Print("Using fallback instance list")
+		instances = fallbackInstances
+	}
+
+	log.Printf("Using %v instance(s):\n  %v", len(instances), strings.Join(instances, "\n  "))
+
 	hnd, err := newHandler("", strings.Join(instances, ","), opts)
 	if err != nil {
 		log.Fatal("Failed creating handler: ", err)
@@ -113,6 +130,66 @@ type handlerOptions struct {
 	format       feedFormat
 	rewrite      bool // rewrite tweet content to point at Twitter
 	debugAuthors bool // log per-author tweet counts
+}
+
+func getCurrentInstances(opts handlerOptions) []string {
+	const host = "status.d420.de"
+	const url = "https://status.d420.de/api/v1/instances"
+
+	bopts := &fsthttp.BackendOptions{}
+	bopts = bopts.ConnectTimeout(opts.timeout)
+	bopts = bopts.FirstByteTimeout(opts.timeout)
+	bopts = bopts.BetweenBytesTimeout(opts.timeout)
+	bopts = bopts.UseSSL(true)
+	bopts = bopts.SNIHostname(host)
+
+	b, err := fsthttp.RegisterDynamicBackend(host, host, bopts)
+	if err != nil {
+		log.Printf("Failed registering backend: %v", err)
+		return nil
+	}
+
+	req, err := fsthttp.NewRequest("GET", url, nil)
+	if err != nil {
+		log.Printf("Failed creating request: %v", err)
+		return nil
+	}
+
+	resp, err := req.Send(context.Background(), b.Name())
+	if err != nil {
+		log.Printf("Failed sending request to %s: %v", url, err)
+		return nil
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fsthttp.StatusOK {
+		log.Printf("Got unexpected status code from %s: %v", url, resp.StatusCode)
+		d, _ := io.ReadAll(resp.Body)
+		log.Printf("Response body: %s", d)
+		return nil
+	}
+
+	var jsonResp struct {
+		Hosts []struct {
+			URL     string `json:"url"`
+			RSS     bool   `json:"rss"`
+			Healthy bool   `json:"healthy"`
+		} `json:"hosts"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&jsonResp); err != nil {
+		log.Printf("Failed decoding response from %s: %v", url, err)
+		return nil
+	}
+
+	var instances []string
+	for _, host := range jsonResp.Hosts {
+		if host.RSS && host.Healthy {
+			instances = append(instances, host.URL)
+		}
+	}
+
+	return instances
 }
 
 func newHandler(base, instances string, opts handlerOptions) (*handler, error) {
@@ -217,9 +294,6 @@ func (hnd *handler) fetch(instance *url.URL, user, query string) (
 	bopts = bopts.BetweenBytesTimeout(hnd.opts.timeout)
 	bopts = bopts.UseSSL(true)
 	bopts = bopts.SNIHostname(instance.Host)
-
-	// needed to work around a viceroy bug
-	bopts = bopts.HostOverride(instance.Host)
 
 	b, err := fsthttp.RegisterDynamicBackend(
 		instance.Host,
