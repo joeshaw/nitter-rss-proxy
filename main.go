@@ -42,6 +42,10 @@ const (
 // https://github.com/zedeus/nitter/wiki/Instances on 31 July 2023. This
 // list is only used if we can't automatically pull a list of working
 // instances.
+//
+// TODO: The server that serves the list of instances throttles pretty
+// aggressively, maybe we should store the list in the KV store or the
+// cache.
 var fallbackInstances = []string{
 	"https://nitter.lacontrevoie.fr",
 	"https://nitter.nixnet.services",
